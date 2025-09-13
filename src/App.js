@@ -1629,7 +1629,7 @@ function App() {
           </Box>
         </DialogContent>
         <DialogActions>
-          <Button 
+          {/* <Button 
             onClick={testKeycloakConnection} 
             color="primary"
             variant="outlined"
@@ -1637,7 +1637,7 @@ function App() {
             startIcon={isTestingConnection ? <CircularProgress size={20} /> : null}
           >
             {isTestingConnection ? 'Testing...' : 'Test Connection'}
-          </Button>
+          </Button> */}
           <Box sx={{ flex: 1 }} />
           <Button 
             onClick={handleResetSettings} 

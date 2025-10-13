@@ -47,6 +47,10 @@ const DEFAULT_CONFIG = {
       username: 'superuser',
       password: 'superuser'
     }
+  },
+  // Processing Configuration
+  processing: {
+    thinkTimeMs: 1000 // Default think time of 1 second between name processing
   }
 };
 
@@ -89,7 +93,8 @@ function App() {
         // Ensure all required fields are present with proper defaults
         const completeConfig = {
           api1: { ...DEFAULT_CONFIG.api1, ...(initialConfig?.api1 || {}) },
-          api2: { ...DEFAULT_CONFIG.api2, ...(initialConfig?.api2 || {}) }
+          api2: { ...DEFAULT_CONFIG.api2, ...(initialConfig?.api2 || {}) },
+          processing: { ...DEFAULT_CONFIG.processing, ...(initialConfig?.processing || {}) }
         };
         
         // Update the config state
@@ -318,8 +323,16 @@ function App() {
           const progress = Math.round(((i + 1) / names.length) * 100);
           showSnackbar(`Processing... ${progress}% (${i+1}/${names.length} names)`, 'info', 1000);
           
-          // Small delay to allow UI to update
-          await new Promise(resolve => setTimeout(resolve, 50));
+          // Apply think time delay if configured (skip for last item)
+          if (i < names.length - 1 && config.processing?.thinkTimeMs > 0) {
+            const thinkTime = config.processing.thinkTimeMs;
+            console.log(`Applying think time: ${thinkTime}ms before next name`);
+            showSnackbar(`Think time: waiting ${thinkTime}ms before next name...`, 'info', thinkTime);
+            await new Promise(resolve => setTimeout(resolve, thinkTime));
+          } else {
+            // Small delay to allow UI to update
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
           
         } catch (error) {
           console.error(`Error processing name: ${name}`, error);
@@ -1289,10 +1302,12 @@ function App() {
     setConnectionStatus(null);
   };
 
-  const handleConfigChange = (api, field, value, isKeycloak = false) => {
+  const handleConfigChange = (api, field, value, isKeycloak = false, isProcessing = false) => {
     setConfig(prev => {
       const newConfig = { ...prev };
-      if (isKeycloak) {
+      if (isProcessing) {
+        newConfig.processing[field] = value;
+      } else if (isKeycloak) {
         newConfig[api].keycloak[field] = value;
       } else if (field === 'url') {
         newConfig[api].url = value;
@@ -1612,6 +1627,38 @@ function App() {
                     />
                   </Box>
                 </Box>
+              </Box>
+            </Box>
+
+            {/* Processing Configuration Section */}
+            <Box sx={{ p: 2, border: '1px solid #e0e0e0', borderRadius: 1 }}>
+              <Typography variant="h6" sx={{ mb: 2 }}>Processing Configuration</Typography>
+              <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: '1fr 1fr' }}>
+                <TextField
+                  label="Think Time (milliseconds)"
+                  type="number"
+                  value={config.processing?.thinkTimeMs || 0}
+                  onChange={(e) => handleConfigChange(null, 'thinkTimeMs', parseInt(e.target.value) || 0, false, true)}
+                  fullWidth
+                  size="small"
+                  helperText="Delay between processing each name (0 = no delay)"
+                  inputProps={{ min: 0, max: 60000, step: 100 }}
+                  disabled={isTestingConnection}
+                />
+                <Box sx={{ display: 'flex', alignItems: 'center', pl: 2 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    Current: {config.processing?.thinkTimeMs || 0}ms
+                    {config.processing?.thinkTimeMs > 0 && (
+                      <> ({(config.processing.thinkTimeMs / 1000).toFixed(1)}s)</>
+                    )}
+                  </Typography>
+                </Box>
+              </Box>
+              <Box sx={{ mt: 1 }}>
+                <Typography variant="caption" color="text.secondary">
+                  Think time adds a delay between processing each name to avoid overwhelming the APIs.
+                  Recommended: 500-2000ms for production use.
+                </Typography>
               </Box>
             </Box>
 

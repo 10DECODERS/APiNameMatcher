@@ -21,13 +21,24 @@ let config = {
       username: 'superuser',
       password: 'superuser'
     }
+  },
+  api3: {
+    url: 'https://screeningdevv2.ap.loclx.io/namecheck/rule-matching/v2',
+    keycloak: {
+      url: 'https://keycloak-auth.inside10d.com',
+      realm: 'ScreeningApp',
+      clientId: 'screening-client',
+      username: 'superuser',
+      password: 'superuser'
+    }
   }
 };
 
 // Store active API instances
 const apiInstances = {
   api1: null,
-  api2: null
+  api2: null,
+  api3: null
 };
 
 // Create axios instance factory function
@@ -153,7 +164,7 @@ const updateConfig = (newConfig) => {
   config = {
     ...config,
     ...newConfig,
-    // Deep merge for api1 and api2 configurations
+    // Deep merge for api1, api2, and api3 configurations
     api1: {
       ...config.api1,
       ...(newConfig.api1 || {}),
@@ -169,16 +180,26 @@ const updateConfig = (newConfig) => {
         ...(config.api2?.keycloak || {}),
         ...(newConfig.api2?.keycloak || {})
       }
+    },
+    api3: {
+      ...config.api3,
+      ...(newConfig.api3 || {}),
+      keycloak: {
+        ...(config.api3?.keycloak || {}),
+        ...(newConfig.api3?.keycloak || {})
+      }
     }
   };
   
   // Recreate axios instances with new configurations
   apiInstances.api1 = createAxiosInstance('api1');
   apiInstances.api2 = createAxiosInstance('api2');
+  apiInstances.api3 = createAxiosInstance('api3');
   
   console.log('Configuration updated:', {
     api1: { url: config.api1.url, keycloak: { url: config.api1.keycloak.url, realm: config.api1.keycloak.realm } },
-    api2: { url: config.api2.url, keycloak: { url: config.api2.keycloak.url, realm: config.api2.keycloak.realm } }
+    api2: { url: config.api2.url, keycloak: { url: config.api2.keycloak.url, realm: config.api2.keycloak.realm } },
+    api3: { url: config.api3.url, keycloak: { url: config.api3.keycloak.url, realm: config.api3.keycloak.realm } }
   });
 };
 
@@ -369,37 +390,89 @@ const apiService = {
   },
 
   /**
-   * Process a name through the specified API
-   * @param {string} name - The name to process
-   * @param {string} [apiName='api1'] - The API to use ('api1' or 'api2')
+   * Process a name or corporate data through the specified API
+   * @param {string|Object} nameData - The name to process or corporate data object
+   * @param {string} [apiName='api1'] - The API to use ('api1', 'api2', or 'api3')
    * @returns {Promise<Object>} The API response
    */
-  processName: async (name, apiName = 'api1') => {
+  processName: async (nameData, apiName = 'api1') => {
     const api = apiUtils.getApi(apiName);
     const startTime = performance.now();
     
     try {
-      console.log(`[${apiName}] Processing name:`, name);
+      // Handle different data structures
+      const isString = typeof nameData === 'string';
+      const isCorporate = !isString && nameData.isCorporate;
+      const name = isString ? nameData : (isCorporate ? nameData.entity : nameData.name);
+      
+      console.log(`[${apiName}] Processing:`, isCorporate ? `Entity: ${nameData.entity} with ${nameData.persons.length} persons` : name);
       
       // Call the appropriate API endpoint based on the API name
       let response;
-      const payload = {
-        matchingRequestDto: [{
-          fullName: name,
-          date: "",
-          year: "",
-          idNumber: "",
-          nationality: "",
-          channelName: "internal",
-          contact: "",
-          accountNo: "",
-          customerType: "",
-          type: "Person",
-          transactionType: "",
-          flag: false,
-          limitFlag: 10000
-        }]
-      };
+      let payload;
+      
+      if (apiName === 'api3') {
+        // Corporate API uses a different payload structure
+        if (isCorporate) {
+          // Map entity to fullName and persons to personMatchRequests array
+          const personMatchRequests = nameData.persons.map((person, index) => ({
+            fullName: person,
+            type: "Person",
+            role: "INTERNAL",
+            index: index
+          }));
+          
+          payload = {
+            matchingRequestDto: [{
+              fullName: nameData.entity, // Entity goes to matchingRequestDto.fullName
+              channelName: "internal",
+              type: "Entity",
+              flag: false,
+              personMatchRequests: personMatchRequests // Multiple persons in array
+            }]
+          };
+        } else {
+          // Fallback for non-corporate data
+          payload = {
+            matchingRequestDto: [{
+              fullName: "10decoders",
+              channelName: "internal",
+              type: "Entity",
+              flag: false,
+              personMatchRequests: [
+                {
+                  fullName: name,
+                  type: "Person",
+                  role: "INTERNAL",
+                  index: 0
+                }
+              ]
+            }]
+          };
+        }
+      } else {
+        // API1 and API2 use the original payload structure
+        payload = {
+          matchingRequestDto: [{
+            fullName: name,
+            date: "",
+            year: "",
+            idNumber: "",
+            nationality: "",
+            channelName: "internal",
+            contact: "",
+            accountNo: "",
+            customerType: "",
+            type: "Person",
+            transactionType: "",
+            flag: false,
+            limitFlag: 10000
+          }]
+        };
+      }
+
+      // Log the payload for debugging
+      console.log(`[${apiName}] Payload:`, JSON.stringify(payload, null, 2));
 
       // Determine the endpoint based on the API name
       let endpoint = '';
@@ -411,6 +484,11 @@ const apiService = {
         endpoint = '';
         // Update the base URL to include the version path
         api.defaults.baseURL = config.api2.url;
+      } else if (apiName === 'api3') {
+        // For API3, use the full URL as the base and no additional path
+        endpoint = '';
+        // Update the base URL to include the full endpoint path
+        api.defaults.baseURL = config.api3.url;
       }
       
       console.log(`[${apiName}] Calling API endpoint:`, endpoint);
@@ -502,7 +580,358 @@ const apiService = {
   },
   
   /**
-   * Process a name through both APIs sequentially and return combined results
+   * Process a name through a single API
+   * @param {string} name - The name to process
+   * @param {string} apiName - The API to use ('api1', 'api2', or 'api3')
+   * @returns {Promise<Object>} Results from the specified API
+   */
+  processNameWithSingleApi: async (name, apiName) => {
+    const startTime = performance.now();
+    console.log(`=== Starting processNameWithSingleApi for ${apiName} ===`);
+    console.log('Processing name:', name);
+    
+    // Log current API configuration
+    console.log(`${apiName.toUpperCase()} Config URL:`, config[apiName].url);
+    
+    try {
+      const token = localStorage.getItem(`${apiName}_authToken`);
+      console.log(`[${apiName}] Current token exists:`, !!token);
+      
+      // Process the name with the specified API
+      const result = await apiService.processName(name, apiName);
+      
+      const endTime = performance.now();
+      const duration = endTime - startTime;
+      
+      console.log(`[${apiName}] Process name completed in ${duration.toFixed(2)}ms`);
+      
+      return {
+        success: true,
+        [apiName]: {
+          ...result,
+          api: apiName,
+          _timing: {
+            startTime,
+            endTime,
+            duration
+          }
+        },
+        timestamp: new Date().toISOString(),
+        _timing: {
+          startTime,
+          endTime,
+          totalDuration: duration
+        },
+        _debug: {
+          [`${apiName}Url`]: config[apiName].url,
+          [`${apiName}Token`]: !!localStorage.getItem(`${apiName}_authToken`)
+        }
+      };
+    } catch (error) {
+      const errorTime = performance.now();
+      console.error(`Unexpected error in processNameWithSingleApi for ${apiName}:`, error);
+      return {
+        success: false,
+        error: `Error processing with ${apiName}: ${error.message}`,
+        [apiName]: {
+          success: false,
+          error: error.message || 'Unknown error',
+          api: apiName,
+          stack: error.stack,
+          _timing: {
+            startTime,
+            endTime: errorTime,
+            duration: errorTime - startTime,
+            error: true
+          }
+        },
+        timestamp: new Date().toISOString(),
+        stack: error.stack,
+        _timing: {
+          startTime,
+          endTime: errorTime,
+          duration: errorTime - startTime,
+          error: true
+        }
+      };
+    }
+  },
+  
+  /**
+   * Process a name through selected APIs
+   * @param {string} name - The name to process
+   * @param {Array<string>} selectedApis - Array of API names to use
+   * @returns {Promise<Object>} Combined results from selected APIs
+   */
+  processNameWithSelectedApis: async (name, selectedApis = ['api1', 'api2', 'api3']) => {
+    const startTime = performance.now();
+    console.log('=== Starting processNameWithSelectedApis ===');
+    console.log('Processing name:', name);
+    console.log('Selected APIs:', selectedApis);
+    
+    // Log current API configurations for selected APIs
+    selectedApis.forEach(apiName => {
+      console.log(`${apiName.toUpperCase()} Config URL:`, config[apiName]?.url);
+    });
+    
+    // Process a single API with detailed timing
+    const processApi = async (apiName) => {
+      const apiStartTime = performance.now();
+      console.log(`[${apiName}] Starting processName`);
+      
+      try {
+        const token = localStorage.getItem(`${apiName}_authToken`);
+        console.log(`[${apiName}] Current token exists:`, !!token);
+        
+        // Process the name with the current API
+        const result = await apiService.processName(name, apiName);
+        
+        const apiEndTime = performance.now();
+        const apiDuration = apiEndTime - apiStartTime;
+        
+        console.log(`[${apiName}] Process name completed in ${apiDuration.toFixed(2)}ms`);
+        
+        return {
+          success: true,
+          ...result,
+          api: apiName,
+          _timing: {
+            startTime: apiStartTime,
+            endTime: apiEndTime,
+            duration: apiDuration
+          }
+        };
+      } catch (error) {
+        const errorTime = performance.now();
+        console.error(`[${apiName}] Error in processName:`, error);
+        return {
+          success: false,
+          error: error.message || 'Unknown error',
+          api: apiName,
+          stack: error.stack,
+          _timing: {
+            startTime: apiStartTime,
+            endTime: errorTime,
+            duration: errorTime - apiStartTime,
+            error: true
+          }
+        };
+      }
+    };
+
+    try {
+      // Process selected APIs sequentially
+      console.log('Starting sequential API processing...');
+      
+      const results = {};
+      const timings = {};
+      const debugInfo = {};
+      
+      for (const apiName of selectedApis) {
+        console.log(`--- Starting ${apiName.toUpperCase()} ---`);
+        const apiResult = await processApi(apiName);
+        results[apiName] = apiResult;
+        timings[`${apiName}Duration`] = apiResult._timing?.duration;
+        debugInfo[`${apiName}Url`] = config[apiName]?.url;
+        debugInfo[`${apiName}Token`] = !!localStorage.getItem(`${apiName}_authToken`);
+        
+        console.log(`${apiName.toUpperCase()} Result:`, {
+          success: apiResult.success,
+          status: apiResult.status,
+          duration: apiResult._timing?.duration?.toFixed(2) + 'ms',
+          error: apiResult.error,
+          responseExists: !!apiResult.responses
+        });
+      }
+      
+      const totalDuration = performance.now() - startTime;
+      
+      const result = {
+        success: Object.values(results).some(r => r.success),
+        ...results,
+        timestamp: new Date().toISOString(),
+        _timing: {
+          startTime,
+          endTime: performance.now(),
+          totalDuration,
+          ...timings
+        },
+        _debug: debugInfo,
+        _selectedApis: selectedApis
+      };
+      
+      console.log(`Total processing time: ${totalDuration.toFixed(2)}ms`);
+      console.log('Final combined result:', result);
+      return result;
+      
+    } catch (error) {
+      const errorTime = performance.now();
+      console.error('Unexpected error in processNameWithSelectedApis:', error);
+      return {
+        success: false,
+        error: `Unexpected error: ${error.message}`,
+        timestamp: new Date().toISOString(),
+        stack: error.stack,
+        _timing: {
+          startTime,
+          endTime: errorTime,
+          duration: errorTime - startTime,
+          error: true
+        },
+        _selectedApis: selectedApis
+      };
+    }
+  },
+  
+  /**
+   * Process a name through all three APIs sequentially and return combined results
+   * @param {string} name - The name to process
+   * @returns {Promise<Object>} Combined results from all APIs
+   */
+  processNameWithAllApis: async (name) => {
+    const startTime = performance.now();
+    console.log('=== Starting processNameWithAllApis ===');
+    console.log('Processing name:', name);
+    
+    // Log current API configurations
+    console.log('API1 Config URL:', config.api1.url);
+    console.log('API2 Config URL:', config.api2.url);
+    console.log('API3 Config URL:', config.api3.url);
+    
+    // Process a single API with detailed timing
+    const processApi = async (apiName) => {
+      const apiStartTime = performance.now();
+      console.log(`[${apiName}] Starting processName`);
+      
+      try {
+        const token = localStorage.getItem(`${apiName}_authToken`);
+        console.log(`[${apiName}] Current token exists:`, !!token);
+        
+        // Process the name with the current API
+        const result = await apiService.processName(name, apiName);
+        
+        const apiEndTime = performance.now();
+        const apiDuration = apiEndTime - apiStartTime;
+        
+        console.log(`[${apiName}] Process name completed in ${apiDuration.toFixed(2)}ms`);
+        
+        return {
+          success: true,
+          ...result,
+          api: apiName,
+          _timing: {
+            startTime: apiStartTime,
+            endTime: apiEndTime,
+            duration: apiDuration
+          }
+        };
+      } catch (error) {
+        const errorTime = performance.now();
+        console.error(`[${apiName}] Error in processName:`, error);
+        return {
+          success: false,
+          error: error.message || 'Unknown error',
+          api: apiName,
+          stack: error.stack,
+          _timing: {
+            startTime: apiStartTime,
+            endTime: errorTime,
+            duration: errorTime - apiStartTime,
+            error: true
+          }
+        };
+      }
+    };
+
+    try {
+      // Process APIs sequentially
+      console.log('Starting sequential API processing...');
+      
+      // Process API1
+      console.log('--- Starting API1 ---');
+      const api1Result = await processApi('api1');
+      
+      // Process API2 after API1 completes
+      console.log('--- Starting API2 ---');
+      const api2Result = await processApi('api2');
+      
+      // Process API3 after API2 completes
+      console.log('--- Starting API3 ---');
+      const api3Result = await processApi('api3');
+      
+      console.log('=== API Results ===');
+      console.log('API1 Result:', {
+        success: api1Result.success,
+        status: api1Result.status,
+        duration: api1Result._timing?.duration?.toFixed(2) + 'ms',
+        error: api1Result.error,
+        responseExists: !!api1Result.responses
+      });
+      console.log('API2 Result:', {
+        success: api2Result.success,
+        status: api2Result.status,
+        duration: api2Result._timing?.duration?.toFixed(2) + 'ms',
+        error: api2Result.error,
+        responseExists: !!api2Result.responses
+      });
+      console.log('API3 Result:', {
+        success: api3Result.success,
+        status: api3Result.status,
+        duration: api3Result._timing?.duration?.toFixed(2) + 'ms',
+        error: api3Result.error,
+        responseExists: !!api3Result.responses
+      });
+      
+      const totalDuration = performance.now() - startTime;
+      
+      const result = {
+        success: api1Result.success || api2Result.success || api3Result.success,
+        api1: api1Result,
+        api2: api2Result,
+        api3: api3Result,
+        timestamp: new Date().toISOString(),
+        _timing: {
+          startTime,
+          endTime: performance.now(),
+          totalDuration,
+          api1Duration: api1Result._timing?.duration,
+          api2Duration: api2Result._timing?.duration,
+          api3Duration: api3Result._timing?.duration
+        },
+        _debug: {
+          api1Url: config.api1.url,
+          api2Url: config.api2.url,
+          api3Url: config.api3.url,
+          api1Token: !!localStorage.getItem('api1_authToken'),
+          api2Token: !!localStorage.getItem('api2_authToken'),
+          api3Token: !!localStorage.getItem('api3_authToken')
+        }
+      };
+      
+      console.log(`Total processing time: ${totalDuration.toFixed(2)}ms`);
+      console.log('Final combined result:', result);
+      return result;
+      
+    } catch (error) {
+      const errorTime = performance.now();
+      console.error('Unexpected error in processNameWithAllApis:', error);
+      return {
+        success: false,
+        error: `Unexpected error: ${error.message}`,
+        timestamp: new Date().toISOString(),
+        stack: error.stack,
+        _timing: {
+          startTime,
+          endTime: errorTime,
+          duration: errorTime - startTime,
+          error: true
+        }
+      };
+    }
+  },
+  
+  /**
+   * Process a name through both APIs sequentially and return combined results (legacy function)
    * @param {string} name - The name to process
    * @returns {Promise<Object>} Combined results from both APIs
    */

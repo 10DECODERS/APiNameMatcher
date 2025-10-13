@@ -21,7 +21,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import * as XLSX from 'xlsx';
 import apiService from './services/apiService';
 import { Download, Settings } from '@mui/icons-material';
-import { TextField, Dialog, DialogTitle, DialogContent, DialogActions, IconButton, Tooltip, Divider } from '@mui/material';
+import { TextField, Dialog, DialogTitle, DialogContent, DialogActions, IconButton, Tooltip, Divider, FormControl, InputLabel, Select, MenuItem, FormControlLabel, Checkbox, FormGroup, Card, CardContent, Radio, RadioGroup } from '@mui/material';
 import axios from 'axios';
 
 // Default configuration
@@ -48,6 +48,17 @@ const DEFAULT_CONFIG = {
       password: 'superuser'
     }
   },
+  // Corporate API Configuration - Corporate screening endpoint
+  api3: {
+    url: 'https://screeningdevv2.ap.loclx.io/namecheck/rule-matching/v2',
+    keycloak: {
+      url: 'https://keycloak-auth.inside10d.com',
+      realm: 'ScreeningApp',
+      clientId: 'screening-client',
+      username: 'superuser',
+      password: 'superuser'
+    }
+  },
   // Processing Configuration
   processing: {
     thinkTimeMs: 1000 // Default think time of 1 second between name processing
@@ -66,6 +77,27 @@ function App() {
   const [config, setConfig] = useState(DEFAULT_CONFIG); // Initialize with defaults
   const [initializing, setInitializing] = useState(true);
   const [configLoaded, setConfigLoaded] = useState(false);
+  const [selectedApis, setSelectedApis] = useState(['api1', 'api2', 'api3']); // Default: all APIs selected
+  const [processingMode, setProcessingMode] = useState('all'); // 'all', 'selected', or 'individual'
+  
+  // Handle processing mode changes
+  const handleProcessingModeChange = (newMode) => {
+    setProcessingMode(newMode);
+    
+    // Reset API selection based on mode
+    if (newMode === 'individual') {
+      // In individual mode, select only the first API
+      setSelectedApis(['api1']);
+    } else if (newMode === 'selected') {
+      // In selected mode, keep current selection or default to all
+      if (selectedApis.length === 0) {
+        setSelectedApis(['api1', 'api2', 'api3']);
+      }
+    } else if (newMode === 'all') {
+      // In all mode, selection doesn't matter but keep all for consistency
+      setSelectedApis(['api1', 'api2', 'api3']);
+    }
+  };
   
   // Initialize config from localStorage or use defaults
   useEffect(() => {
@@ -94,6 +126,7 @@ function App() {
         const completeConfig = {
           api1: { ...DEFAULT_CONFIG.api1, ...(initialConfig?.api1 || {}) },
           api2: { ...DEFAULT_CONFIG.api2, ...(initialConfig?.api2 || {}) },
+          api3: { ...DEFAULT_CONFIG.api3, ...(initialConfig?.api3 || {}) },
           processing: { ...DEFAULT_CONFIG.processing, ...(initialConfig?.processing || {}) }
         };
         
@@ -120,7 +153,7 @@ function App() {
         // Save to localStorage
         localStorage.setItem('appConfig', JSON.stringify(config));
         
-        // Update API service with new config for both APIs
+        // Update API service with new config for all APIs
         await apiService.updateConfig({
           api1: {
             url: config.api1?.url || DEFAULT_CONFIG.api1.url,
@@ -140,6 +173,16 @@ function App() {
               clientId: config.api2?.keycloak?.clientId || DEFAULT_CONFIG.api2.keycloak.clientId,
               username: config.api2?.keycloak?.username || DEFAULT_CONFIG.api2.keycloak.username,
               password: config.api2?.keycloak?.password || DEFAULT_CONFIG.api2.keycloak.password
+            }
+          },
+          api3: {
+            url: config.api3?.url || DEFAULT_CONFIG.api3.url,
+            keycloak: {
+              url: config.api3?.keycloak?.url || DEFAULT_CONFIG.api3.keycloak.url,
+              realm: config.api3?.keycloak?.realm || DEFAULT_CONFIG.api3.keycloak.realm,
+              clientId: config.api3?.keycloak?.clientId || DEFAULT_CONFIG.api3.keycloak.clientId,
+              username: config.api3?.keycloak?.username || DEFAULT_CONFIG.api3.keycloak.username,
+              password: config.api3?.keycloak?.password || DEFAULT_CONFIG.api3.keycloak.password
             }
           }
         });
@@ -162,14 +205,15 @@ function App() {
     updateApiConfig();
   }, [config, initializing, configLoaded]);
 
-  // Initialize authentication for both APIs once config is loaded
+  // Initialize authentication for all APIs once config is loaded
   useEffect(() => {
     if (!configLoaded || !initializing) return;
     
     const initializeAuth = async () => {
       const authResults = {
         api1: { success: false, error: null },
-        api2: { success: false, error: null }
+        api2: { success: false, error: null },
+        api3: { success: false, error: null }
       };
       
       // Function to initialize a single API's authentication
@@ -203,15 +247,16 @@ function App() {
       };
       
       try {
-        // Initialize both APIs in parallel
+        // Initialize all APIs in parallel
         await Promise.all([
           initApiAuth('api1'),
-          initApiAuth('api2')
+          initApiAuth('api2'),
+          initApiAuth('api3')
         ]);
         
         // Check if any authentication failed
-        const allSucceeded = authResults.api1.success && authResults.api2.success;
-        const anySucceeded = authResults.api1.success || authResults.api2.success;
+        const allSucceeded = authResults.api1.success && authResults.api2.success && authResults.api3.success;
+        const anySucceeded = authResults.api1.success || authResults.api2.success || authResults.api3.success;
         
         if (!allSucceeded) {
           // Build error message for failed authentications
@@ -221,6 +266,9 @@ function App() {
           }
           if (!authResults.api2.success) {
             errorMessages.push(`API2: ${authResults.api2.error}`);
+          }
+          if (!authResults.api3.success) {
+            errorMessages.push(`API3: ${authResults.api3.error}`);
           }
           
           setSnackbar({
@@ -269,42 +317,83 @@ function App() {
       showSnackbar('Initializing authentication, please wait...', 'info');
       return;
     }
+    
+    if (processingMode !== 'all' && selectedApis.length === 0) {
+      showSnackbar('Please select at least one API to proceed', 'warning');
+      return;
+    }
 
     setLoading(true);
     setResults([]);
 
     try {
       const data = await readExcel(file);
+      
+      // Detect file format and show notification
+      const headers = data[0] || [];
+      const isCorporateFormat = headers.some(header => 
+        header && (header.toLowerCase().includes('entity') || header.toLowerCase().includes('person-'))
+      );
+      
+      if (isCorporateFormat) {
+        showSnackbar('Corporate format detected - extracting names from all columns', 'info', 3000);
+      } else {
+        showSnackbar('Standard format detected - extracting names from first column', 'info', 3000);
+      }
+      
       const names = extractNames(data);
       
-      // Process each name sequentially
+      if (names.length === 0) {
+        showSnackbar('No names found in the uploaded file', 'warning');
+        setLoading(false);
+        return;
+      }
+      
+      console.log(`Extracted ${names.length} ${isCorporateFormat ? 'corporate entities' : 'names'} from ${isCorporateFormat ? 'Corporate' : 'Standard'} format`);
+      
+      // Process each item sequentially
       for (let i = 0; i < names.length; i++) {
-        const name = names[i];
+        const item = names[i];
         const nameStartTime = performance.now();
         
+        // Handle different data structures - define outside try block for catch access
+        const displayName = item.isCorporate ? `${item.entity} (${item.persons.length} persons)` : item.name;
+        
         try {
-          console.log(`=== Processing name ${i+1}/${names.length}: ${name} ===`);
+          console.log(`=== Processing ${i+1}/${names.length}: ${displayName} ===`);
+          console.log(`Processing mode: ${processingMode}, Selected APIs: ${selectedApis.join(', ')}`);
           
-          // Process with both APIs sequentially
-          const result = await apiService.processNameWithBothApis(name);
+          // Process with APIs based on selected mode
+          let result;
+          if (processingMode === 'all') {
+            result = await apiService.processNameWithAllApis(item);
+          } else if (processingMode === 'selected') {
+            result = await apiService.processNameWithSelectedApis(item, selectedApis);
+          } else {
+            // Individual mode - process only the first selected API
+            const apiToUse = selectedApis[0] || 'api1';
+            result = await apiService.processNameWithSingleApi(item, apiToUse);
+          }
           
-          // Compare SDN data between V2, V4, and Univius
+          // Compare SDN data between V2, V4, API3, and Univius
           const sdnComparison = compareSdnData(
             result.api1?.responses, 
             result.api2?.responses, 
+            result.api3?.responses,
             result.univius
           );
           
           const nameEndTime = performance.now();
           const nameDuration = nameEndTime - nameStartTime;
           
-          console.log(`Completed processing name: ${name} in ${nameDuration.toFixed(2)}ms`);
+          console.log(`Completed processing: ${displayName} in ${nameDuration.toFixed(2)}ms`);
           
           // Update results with the new data
           const newResult = {
-            name,
+            name: displayName,
             v2: result.api1,  // API1 results as V2
             v4: result.api2,  // API2 results as V4
+            corporate: result.api3, // Corporate API results
             univius: result.univius,
             _timing: {
               ...result._timing,
@@ -313,7 +402,8 @@ function App() {
               nameProcessingDuration: nameDuration
             },
             _sdnComparison: sdnComparison,
-            id: `${name}-${Date.now()}-${i}`,
+            _originalData: item, // Store original data for table display
+            id: `${displayName}-${Date.now()}-${i}`,
             _apiResults: result // Store full API results for debugging
           };
           
@@ -321,7 +411,19 @@ function App() {
           
           // Update progress
           const progress = Math.round(((i + 1) / names.length) * 100);
-          showSnackbar(`Processing... ${progress}% (${i+1}/${names.length} names)`, 'info', 1000);
+          const getApiDisplayName = (apiName) => {
+            switch(apiName) {
+              case 'api1': return 'API1 (V2)';
+              case 'api2': return 'API2 (V4)';
+              case 'api3': return 'Corporate API';
+              default: return apiName?.toUpperCase() || 'API';
+            }
+          };
+          
+          const modeText = processingMode === 'all' ? 'All APIs' : 
+                          processingMode === 'selected' ? `${selectedApis.length} APIs` : 
+                          getApiDisplayName(selectedApis[0]);
+          showSnackbar(`Processing with ${modeText}... ${progress}% (${i+1}/${names.length} names)`, 'info', 1000);
           
           // Apply think time delay if configured (skip for last item)
           if (i < names.length - 1 && config.processing?.thinkTimeMs > 0) {
@@ -335,12 +437,12 @@ function App() {
           }
           
         } catch (error) {
-          console.error(`Error processing name: ${name}`, error);
+          console.error(`Error processing: ${displayName}`, error);
           // Add a failed entry to results
           setResults(prevResults => [
             ...prevResults,
             {
-              name,
+              name: displayName,
               error: `Error: ${error.message}`,
               _timing: {
                 nameProcessingStart: nameStartTime,
@@ -348,7 +450,7 @@ function App() {
                 nameProcessingDuration: performance.now() - nameStartTime,
                 error: true
               },
-              id: `${name}-error-${Date.now()}-${i}`
+              id: `${displayName}-error-${Date.now()}-${i}`
             }
           ]);
         }
@@ -382,7 +484,63 @@ function App() {
   };
 
   const extractNames = (data) => {
-    return data.slice(1).map(row => row[0]).filter(Boolean);
+    if (!data || data.length === 0) return [];
+    
+    // Check if this is Corporate API format by looking at headers
+    const headers = data[0] || [];
+    const isCorporateFormat = headers.some(header => 
+      header && (header.toLowerCase().includes('entity') || header.toLowerCase().includes('person-'))
+    );
+    
+    if (isCorporateFormat) {
+      // Corporate API format: Return structured data with entities and persons
+      const corporateData = [];
+      
+      // Find column indices
+      const entityIndex = headers.findIndex(h => h && h.toLowerCase().includes('entity'));
+      const personIndices = [];
+      
+      headers.forEach((header, index) => {
+        if (header && header.toLowerCase().includes('person-')) {
+          personIndices.push(index);
+        }
+      });
+      
+      // Skip header row and process each row
+      for (let i = 1; i < data.length; i++) {
+        const row = data[i];
+        if (!row) continue;
+        
+        const entity = row[entityIndex];
+        if (!entity || !entity.trim()) continue;
+        
+        // Extract persons from this row
+        const persons = [];
+        personIndices.forEach(personIndex => {
+          const person = row[personIndex];
+          if (person && typeof person === 'string' && person.trim()) {
+            persons.push(person.trim());
+          }
+        });
+        
+        if (persons.length > 0) {
+          corporateData.push({
+            entity: entity.trim(),
+            persons: persons,
+            isCorporate: true,
+            originalRow: row // Store the original row data for table display
+          });
+        }
+      }
+      
+      return corporateData;
+    } else {
+      // Standard format: Extract from first column only
+      return data.slice(1).map(row => row[0]).filter(Boolean).map(name => ({
+        name: name,
+        isCorporate: false
+      }));
+    }
   };
 
   // Helper function to extract SDNs from univius API response
@@ -396,9 +554,9 @@ function App() {
     }));
   };
 
-  // Helper function to compare SDN data between V2, V4, and Univius
-  const compareSdnData = (v2Data, v4Data, univiusData) => {
-    // Extract unique SDN IDs from V2, V4, and Univius
+  // Helper function to compare SDN data between V2, V4, API3, and Univius
+  const compareSdnData = (v2Data, v4Data, api3Data, univiusData) => {
+    // Extract unique SDN IDs from V2, V4, API3, and Univius
     const v2Sdns = new Set(
       (v2Data?.responses || [])
         .flatMap(item => item.rulesDetails?.sdnid || [])
@@ -407,6 +565,12 @@ function App() {
     
     const v4Sdns = new Set(
       (v4Data?.responses || [])
+        .flatMap(item => item.rulesDetails?.sdnid || [])
+        .filter(Boolean)
+    );
+    
+    const api3Sdns = new Set(
+      (api3Data?.responses || [])
         .flatMap(item => item.rulesDetails?.sdnid || [])
         .filter(Boolean)
     );
@@ -424,10 +588,10 @@ function App() {
         .find(rule => rule.sdnid === sdnId);
     };
 
-    // Find SDNs in V2 but not in V4 or Univius
+    // Find SDNs in V2 but not in V4, API3, or Univius
     const onlyInV2 = [];
     v2Sdns.forEach(sdnId => {
-      if (!v4Sdns.has(sdnId) && !univiusSdns.has(sdnId)) {
+      if (!v4Sdns.has(sdnId) && !api3Sdns.has(sdnId) && !univiusSdns.has(sdnId)) {
         const sdnInfo = findSdnInfo(v2Data, sdnId);
         if (sdnInfo) {
           onlyInV2.push({
@@ -439,10 +603,10 @@ function App() {
       }
     });
 
-    // Find SDNs in V4 but not in V2 or Univius
+    // Find SDNs in V4 but not in V2, API3, or Univius
     const onlyInV4 = [];
     v4Sdns.forEach(sdnId => {
-      if (!v2Sdns.has(sdnId) && !univiusSdns.has(sdnId)) {
+      if (!v2Sdns.has(sdnId) && !api3Sdns.has(sdnId) && !univiusSdns.has(sdnId)) {
         const sdnInfo = findSdnInfo(v4Data, sdnId);
         if (sdnInfo) {
           onlyInV4.push({
@@ -454,10 +618,25 @@ function App() {
       }
     });
     
-    // Find SDNs in Univius but not in V2 or V4
+    // Find SDNs in API3 but not in V2, V4, or Univius
+    const onlyInApi3 = [];
+    api3Sdns.forEach(sdnId => {
+      if (!v2Sdns.has(sdnId) && !v4Sdns.has(sdnId) && !univiusSdns.has(sdnId)) {
+        const sdnInfo = findSdnInfo(api3Data, sdnId);
+        if (sdnInfo) {
+          onlyInApi3.push({
+            id: sdnId,
+            name: sdnInfo.sdnname || 'N/A',
+            reference: sdnInfo.sanctionReferenceName || ''
+          });
+        }
+      }
+    });
+    
+    // Find SDNs in Univius but not in V2, V4, or API3
     const onlyInUnivius = [];
     univiusSdns.forEach(sdnId => {
-      if (!v2Sdns.has(sdnId) && !v4Sdns.has(sdnId)) {
+      if (!v2Sdns.has(sdnId) && !v4Sdns.has(sdnId) && !api3Sdns.has(sdnId)) {
         const sdnInfo = (Array.isArray(univiusData) ? univiusData : []).find(item => item.sdnId === sdnId);
         if (sdnInfo) {
           onlyInUnivius.push({
@@ -469,7 +648,7 @@ function App() {
       }
     });
 
-    return { onlyInV2, onlyInV4, onlyInUnivius };
+    return { onlyInV2, onlyInV4, onlyInApi3, onlyInUnivius };
   };
 
   // Helper function to split SDN list into chunks that fit within Excel's cell limit
@@ -596,8 +775,13 @@ function App() {
       // Show loading indicator
       const loadingSnackbar = showSnackbar('Preparing export...', 'info', 0);
       
+      // Check if we have Corporate API data
+      const hasCorporateData = results.some(result => 
+        result.name && result.name.includes('persons)')
+      );
+      
       // Process data in chunks to avoid memory issues
-      const CHUNK_SIZE = 100; // Smaller chunk size for better responsiveness
+      const CHUNK_SIZE = 100;
       const exportData = [];
       
       for (let i = 0; i < results.length; i += CHUNK_SIZE) {
@@ -605,7 +789,104 @@ function App() {
         
         // Process chunk
         for (const result of chunk) {
-          // Get unique SDNs for V2, V4, and Univius
+          if (hasCorporateData) {
+            // Check if this is Individual Corporate API mode
+            const isIndividualCorporate = processingMode === 'individual' && 
+                                         selectedApis.includes('api3') && 
+                                         selectedApis.length === 1;
+            
+            if (isIndividualCorporate) {
+              // Handle Individual Corporate API - Excel-like format
+              const nameMatch = result.name.match(/^(.+) \((\d+) persons\)$/);
+              const entity = nameMatch ? nameMatch[1] : result.name;
+              
+              // Get the Corporate API timing
+              const corporateData = result.corporate;
+              const processingTime = corporateData?._timing?.duration || corporateData?._duration || 0;
+              
+              // Get the original persons data from stored original data
+              const originalData = result._originalData;
+              const originalRow = originalData?.originalRow || [];
+              
+              // Find person columns (skip entity column which is index 0)
+              const personColumns = [];
+              for (let j = 1; j < Math.min(originalRow.length, 4); j++) { // Show up to 3 person columns
+                personColumns.push(originalRow[j] || '');
+              }
+              
+              // Ensure we have exactly 3 person columns
+              while (personColumns.length < 3) {
+                personColumns.push('');
+              }
+              
+              exportData.push({
+                'Serial': i + 1,
+                'Entity': entity,
+                'Person-1': personColumns[0],
+                'Person-2': personColumns[1],
+                'Person-3': personColumns[2],
+                'Processing Time (ms)': processingTime.toFixed(2)
+              });
+            } else {
+              // Handle other Corporate API modes - detailed format
+              const nameMatch = result.name.match(/^(.+) \((\d+) persons\)$/);
+              const entity = nameMatch ? nameMatch[1] : result.name;
+              const personCount = nameMatch ? nameMatch[2] : '0';
+              
+              // Export each API's results as separate rows
+            const apis = ['v2', 'v4', 'corporate'];
+            apis.forEach(apiKey => {
+              const apiData = result[apiKey];
+              if (!apiData) return;
+              
+              const apiName = apiKey === 'v2' ? 'API1 (V2)' : 
+                             apiKey === 'v4' ? 'API2 (V4)' : 
+                             'Corporate API';
+              
+              const processingTime = apiData._timing?.duration || apiData._duration || 0;
+              const status = apiData.success !== false ? 'Success' : 'Failed';
+              
+              if (!apiData.responses || apiData.responses.length === 0) {
+                exportData.push({
+                  'Serial': i + 1,
+                  'Entity': entity,
+                  'Persons': personCount,
+                  'API Version': apiName,
+                  'SDN ID': 'No matches',
+                  'SDN Name': 'N/A',
+                  'Processing Time (ms)': processingTime.toFixed(2),
+                  'Status': status,
+                  'Only in V2': result._sdnComparison?.onlyInV2?.length || 0,
+                  'Only in V4': result._sdnComparison?.onlyInV4?.length || 0,
+                  'Only in Corporate': result._sdnComparison?.onlyInApi3?.length || 0,
+                  'Only in Univius': result._sdnComparison?.onlyInUnivius?.length || 0
+                });
+              } else {
+                apiData.responses.forEach(response => {
+                  const sdnId = response.rulesDetails?.sdnid || 'N/A';
+                  const sdnName = response.rulesDetails?.sdnname || 'N/A';
+                  
+                  exportData.push({
+                    'Serial': i + 1,
+                    'Entity': entity,
+                    'Persons': personCount,
+                    'API Version': apiName,
+                    'SDN ID': sdnId,
+                    'SDN Name': sdnName,
+                    'Processing Time (ms)': processingTime.toFixed(2),
+                    'Status': status,
+                    'Only in V2': result._sdnComparison?.onlyInV2?.length || 0,
+                    'Only in V4': result._sdnComparison?.onlyInV4?.length || 0,
+                    'Only in Corporate': result._sdnComparison?.onlyInApi3?.length || 0,
+                    'Only in Univius': result._sdnComparison?.onlyInUnivius?.length || 0
+                  });
+                });
+              }
+            });
+            } // End of else block for other Corporate API modes
+          } else {
+            // Handle Standard format (existing logic)
+            // Get unique SDNs for V2, V4, and Univius
           const v2Sdns = result.v2?.responses?.length > 0
             ? result.v2.responses.map(item => ({
                 id: item.rulesDetails?.sdnid || 'N/A',
@@ -687,50 +968,111 @@ function App() {
             1 // At least one row
           );
           
-          // Create rows for this result
-          for (let i = 0; i < maxChunks; i++) {
-            const isFirstRow = i === 0;
-            const formatTime = (time) => time ? time.toFixed(2) : 'N/A';
+          // Check if this is Individual API mode
+          const isIndividualMode = processingMode === 'individual';
+          
+          if (isIndividualMode) {
+            // Individual API mode - simple format without comparison columns
+            const selectedApi = selectedApis[0]; // Should be only one API selected
+            let apiData, apiName, apiTiming;
             
-            const rowData = {
-              'Name': isFirstRow ? result.name : `(cont.) ${result.name}`,
-              
-              // V2 Data
-              'V2 Network Time (ms)': isFirstRow ? formatTime(v2Timing.duration) : '',
-              'V2 Total Time (ms)': isFirstRow ? formatTime(v2Timing.totalDuration) : '',
-              'V2 Pre-Request (ms)': isFirstRow ? formatTime(v2Timing.preRequest) : '',
-              'V2 SDN Matches': v2Chunks[i]?.content || (isFirstRow ? 'No matches' : ''),
-              'Only in V2': onlyV2Chunks[i]?.content || (isFirstRow ? 'No matches' : ''),
-              
-              // V4 Data
-              'V4 Network Time (ms)': isFirstRow ? formatTime(v4Timing.duration) : '',
-              'V4 Total Time (ms)': isFirstRow ? formatTime(v4Timing.totalDuration) : '',
-              'V4 Pre-Request (ms)': isFirstRow ? formatTime(v4Timing.preRequest) : '',
-              'V4 SDN Matches': v4Chunks[i]?.content || (isFirstRow ? 'No matches' : ''),
-              'Only in V4': onlyV4Chunks[i]?.content || (isFirstRow ? 'No matches' : ''),
-              
-              // Univius Data
-              'Univius Network Time (ms)': isFirstRow ? formatTime(univiusTiming.duration) : '',
-              'Univius Total Time (ms)': isFirstRow ? formatTime(univiusTiming.totalDuration) : '',
-              'Univius Pre-Request (ms)': isFirstRow ? formatTime(univiusTiming.preRequest) : '',
-              'Univius SDN Matches': univiusChunks[i]?.content || (isFirstRow ? 'No matches' : ''),
-              'Only in Univius': onlyUniviusChunks[i]?.content || (isFirstRow ? 'No matches' : ''),
-              
-              // Comparison
-              'Fastest API': isFirstRow ? 
-                (fastestApi === 'v2' ? 'V2' : 
-                 fastestApi === 'v4' ? 'V4' : 
-                 fastestApi === 'univius' ? 'Univius' : 'N/A') : '',
-              
-              'Total Duration (ms)': isFirstRow ? formatTime(Math.max(
-                v2Timing.totalDuration,
-                v4Timing.totalDuration,
-                univiusTiming.totalDuration
-              )) : ''
-            };
+            if (selectedApi === 'api1') {
+              apiData = result.v2;
+              apiName = 'V2';
+              apiTiming = v2Timing;
+            } else if (selectedApi === 'api2') {
+              apiData = result.v4;
+              apiName = 'V4';
+              apiTiming = v4Timing;
+            } else if (selectedApi === 'univius') {
+              apiData = result.univius;
+              apiName = 'Univius';
+              apiTiming = univiusTiming;
+            }
             
-            exportData.push(rowData);
+            if (apiData) {
+              const formatTime = (time) => time ? time.toFixed(2) : 'N/A';
+              
+              // Handle SDN matches
+              if (!apiData.responses || apiData.responses.length === 0) {
+                // No matches
+                exportData.push({
+                  'Serial': i + 1,
+                  'Name': result.name,
+                  'API Version': apiName,
+                  'SDN ID': 'No matches',
+                  'SDN Name': 'N/A',
+                  'NMP (%)': 'N/A',
+                  'OMP (%)': 'N/A',
+                  'Processing Time (ms)': formatTime(apiTiming.duration)
+                });
+              } else {
+                // Has matches - create row for each SDN
+                apiData.responses.forEach((response, responseIdx) => {
+                  const sdnId = response.rulesDetails?.sdnid || 'N/A';
+                  const sdnName = response.rulesDetails?.sdnname || 'N/A';
+                  
+                  exportData.push({
+                    'Serial': responseIdx === 0 ? i + 1 : '',
+                    'Name': responseIdx === 0 ? result.name : '',
+                    'API Version': responseIdx === 0 ? apiName : '',
+                    'SDN ID': sdnId,
+                    'SDN Name': sdnName,
+                    'NMP (%)': response.nameMatchPercentage ? `${response.nameMatchPercentage}%` : 'N/A',
+                    'OMP (%)': response.overAllPercentage ? `${response.overAllPercentage}%` : 'N/A',
+                    'Processing Time (ms)': responseIdx === 0 ? formatTime(apiTiming.duration) : ''
+                  });
+                });
+              }
+            }
+          } else {
+            // Multi-API modes - detailed format with comparison columns
+            // Create rows for this result
+            for (let j = 0; j < maxChunks; j++) {
+              const isFirstRow = j === 0;
+              const formatTime = (time) => time ? time.toFixed(2) : 'N/A';
+              
+              const rowData = {
+                'Name': isFirstRow ? result.name : `(cont.) ${result.name}`,
+                
+                // V2 Data
+                'V2 Network Time (ms)': isFirstRow ? formatTime(v2Timing.duration) : '',
+                'V2 Total Time (ms)': isFirstRow ? formatTime(v2Timing.totalDuration) : '',
+                'V2 Pre-Request (ms)': isFirstRow ? formatTime(v2Timing.preRequest) : '',
+                'V2 SDN Matches': v2Chunks[j]?.content || (isFirstRow ? 'No matches' : ''),
+                'Only in V2': onlyV2Chunks[j]?.content || (isFirstRow ? 'No matches' : ''),
+                
+                // V4 Data
+                'V4 Network Time (ms)': isFirstRow ? formatTime(v4Timing.duration) : '',
+                'V4 Total Time (ms)': isFirstRow ? formatTime(v4Timing.totalDuration) : '',
+                'V4 Pre-Request (ms)': isFirstRow ? formatTime(v4Timing.preRequest) : '',
+                'V4 SDN Matches': v4Chunks[j]?.content || (isFirstRow ? 'No matches' : ''),
+                'Only in V4': onlyV4Chunks[j]?.content || (isFirstRow ? 'No matches' : ''),
+                
+                // Univius Data
+                'Univius Network Time (ms)': isFirstRow ? formatTime(univiusTiming.duration) : '',
+                'Univius Total Time (ms)': isFirstRow ? formatTime(univiusTiming.totalDuration) : '',
+                'Univius Pre-Request (ms)': isFirstRow ? formatTime(univiusTiming.preRequest) : '',
+                'Univius SDN Matches': univiusChunks[j]?.content || (isFirstRow ? 'No matches' : ''),
+                'Only in Univius': onlyUniviusChunks[j]?.content || (isFirstRow ? 'No matches' : ''),
+                
+                // Comparison
+                'Fastest API': isFirstRow ? 
+                  (fastestApi === 'v2' ? 'V2' : 
+                   fastestApi === 'v4' ? 'V4' : 
+                   fastestApi === 'univius' ? 'Univius' : 'N/A') : '',
+                
+                'Total Duration (ms)': isFirstRow ? formatTime(Math.max(
+                  v2Timing.totalDuration,
+                  v4Timing.totalDuration,
+                  univiusTiming.totalDuration
+                )) : ''
+              };
+              
+              exportData.push(rowData);
+            }
           }
+          } // End of else block for standard format
         } // End of result processing
         
         // Update progress
@@ -1002,24 +1344,243 @@ function App() {
       );
     }
 
+    // Check if we have Corporate API data
+    const hasCorporateData = results.some(result => 
+      result.name && result.name.includes('persons)')
+    );
+
+    // Function to render Corporate API rows
+    const renderCorporateRows = (result, idx, serialNumber, version) => {
+      // Check if this is Individual Corporate API mode
+      const isIndividualCorporate = processingMode === 'individual' && 
+                                   selectedApis.includes('api3') && 
+                                   selectedApis.length === 1;
+      
+      if (isIndividualCorporate) {
+        // For Individual Corporate API, show Excel-like format
+        // Parse the original data to get entity and persons
+        const nameMatch = result.name.match(/^(.+) \((\d+) persons\)$/);
+        const entity = nameMatch ? nameMatch[1] : result.name;
+        
+        // Get the Corporate API timing
+        const corporateData = result.corporate;
+        const processingTime = corporateData?._timing?.duration || corporateData?._duration || 0;
+        
+        // Get the original persons data from stored original data
+        const originalData = result._originalData;
+        const originalRow = originalData?.originalRow || [];
+        
+        // Find person columns (skip entity column which is index 0)
+        const personColumns = [];
+        for (let i = 1; i < Math.min(originalRow.length, 4); i++) { // Show up to 3 person columns
+          personColumns.push(originalRow[i] || '');
+        }
+        
+        // Ensure we have exactly 3 person columns
+        while (personColumns.length < 3) {
+          personColumns.push('');
+        }
+        
+        return (
+          <TableRow key={`corporate-simple-${idx}`}>
+            <TableCell>{serialNumber}</TableCell>
+            <TableCell>{entity}</TableCell>
+            {personColumns.map((person, personIdx) => (
+              <TableCell key={`person-${personIdx}`}>
+                {person}
+              </TableCell>
+            ))}
+            <TableCell>{processingTime.toFixed(2)} ms</TableCell>
+          </TableRow>
+        );
+      } else {
+        // For other modes, show detailed API response format
+        const nameMatch = result.name.match(/^(.+) \((\d+) persons\)$/);
+        const entity = nameMatch ? nameMatch[1] : result.name;
+        const personCount = nameMatch ? nameMatch[2] : '0';
+        
+        // Get API data
+        const apis = ['v2', 'v4', 'corporate'];
+        const rows = [];
+        
+        apis.forEach((apiKey, apiIdx) => {
+          const apiData = result[apiKey];
+          if (!apiData) return;
+          
+          const apiName = apiKey === 'v2' ? 'API1 (V2)' : 
+                         apiKey === 'v4' ? 'API2 (V4)' : 
+                         'Corporate API';
+          
+          const processingTime = apiData._timing?.duration || apiData._duration || 0;
+          const status = apiData.success !== false ? 'Success' : 'Failed';
+          
+          // Handle responses
+          if (!apiData.responses || apiData.responses.length === 0) {
+            rows.push(
+              <TableRow key={`${apiKey}-${idx}-no-match`}>
+                {apiIdx === 0 && (
+                  <>
+                    <TableCell rowSpan={apis.filter(key => result[key]).length}>
+                      {serialNumber}
+                    </TableCell>
+                    <TableCell rowSpan={apis.filter(key => result[key]).length}>
+                      {entity}
+                    </TableCell>
+                    <TableCell rowSpan={apis.filter(key => result[key]).length}>
+                      {personCount}
+                    </TableCell>
+                  </>
+                )}
+                <TableCell>{apiName}</TableCell>
+                <TableCell>No matches</TableCell>
+                <TableCell>N/A</TableCell>
+                <TableCell>{processingTime.toFixed(2)}</TableCell>
+                <TableCell>{status}</TableCell>
+                {version === 'combined' && (
+                  <>
+                    <TableCell>{result._sdnComparison?.onlyInV2?.length || 0}</TableCell>
+                    <TableCell>{result._sdnComparison?.onlyInV4?.length || 0}</TableCell>
+                    <TableCell>{result._sdnComparison?.onlyInApi3?.length || 0}</TableCell>
+                    <TableCell>{result._sdnComparison?.onlyInUnivius?.length || 0}</TableCell>
+                  </>
+                )}
+              </TableRow>
+            );
+          } else {
+            // Render rows for each SDN match
+            apiData.responses.forEach((response, responseIdx) => {
+              const sdnId = response.rulesDetails?.sdnid || 'N/A';
+              const sdnName = response.rulesDetails?.sdnname || 'N/A';
+              
+              rows.push(
+                <TableRow key={`${apiKey}-${idx}-${responseIdx}`}>
+                  {apiIdx === 0 && responseIdx === 0 && (
+                    <>
+                      <TableCell rowSpan={apis.reduce((total, key) => {
+                        const data = result[key];
+                        return total + (data?.responses?.length || 1);
+                      }, 0)}>
+                        {serialNumber}
+                      </TableCell>
+                      <TableCell rowSpan={apis.reduce((total, key) => {
+                        const data = result[key];
+                        return total + (data?.responses?.length || 1);
+                      }, 0)}>
+                        {entity}
+                      </TableCell>
+                      <TableCell rowSpan={apis.reduce((total, key) => {
+                        const data = result[key];
+                        return total + (data?.responses?.length || 1);
+                      }, 0)}>
+                        {personCount}
+                      </TableCell>
+                    </>
+                  )}
+                  {responseIdx === 0 && (
+                    <TableCell rowSpan={apiData.responses.length}>
+                      {apiName}
+                    </TableCell>
+                  )}
+                  <TableCell>{sdnId}</TableCell>
+                  <TableCell>{sdnName}</TableCell>
+                  {responseIdx === 0 && (
+                    <>
+                      <TableCell rowSpan={apiData.responses.length}>
+                        {processingTime.toFixed(2)}
+                      </TableCell>
+                      <TableCell rowSpan={apiData.responses.length}>
+                        {status}
+                      </TableCell>
+                      {version === 'combined' && (
+                        <>
+                          <TableCell rowSpan={apiData.responses.length}>
+                            {result._sdnComparison?.onlyInV2?.length || 0}
+                          </TableCell>
+                          <TableCell rowSpan={apiData.responses.length}>
+                            {result._sdnComparison?.onlyInV4?.length || 0}
+                          </TableCell>
+                          <TableCell rowSpan={apiData.responses.length}>
+                            {result._sdnComparison?.onlyInApi3?.length || 0}
+                          </TableCell>
+                          <TableCell rowSpan={apiData.responses.length}>
+                            {result._sdnComparison?.onlyInUnivius?.length || 0}
+                          </TableCell>
+                        </>
+                      )}
+                    </>
+                  )}
+                </TableRow>
+              );
+            });
+          }
+        });
+        
+        return rows;
+      }
+    };
+
     const renderTable = (version = 'combined') => {
-      // Define base headers
-      const baseHeaders = [
-        '#', 'Name', 'API Version', 'SDN ID', 'SDN Name', 'Duration', 
-        'V2 Faster?', 'V4 Faster?'
-      ];
+      // Define headers based on data type
+      let headers;
       
-      // For combined view, add additional columns
-      const combinedHeaders = [
-        ...baseHeaders.slice(0, -2), // Remove the last two columns (V2/V4 Faster?)
-        'V2 Faster?', 
-        'V4 Faster?',
-        'Only in V2', 
-        'Only in V4',
-      ];
-      
-      // Use appropriate headers based on view
-      const headers = version === 'combined' ? combinedHeaders : baseHeaders;
+      if (hasCorporateData) {
+        // Check if this is Individual Corporate API mode
+        const isIndividualCorporate = processingMode === 'individual' && 
+                                     selectedApis.includes('api3') && 
+                                     selectedApis.length === 1;
+        
+        if (isIndividualCorporate) {
+          // Excel-like format headers for Individual Corporate API
+          headers = [
+            '#', 'Entity', 'Person-1', 'Person-2', 'Person-3', 'Processing Time (ms)'
+          ];
+        } else {
+          // Corporate API format headers for other modes
+          headers = [
+            '#', 'Entity', 'Persons', 'API Version', 'SDN ID', 'SDN Name', 
+            'Processing Time (ms)', 'Status'
+          ];
+          
+          // Add comparison columns for combined view
+          if (version === 'combined') {
+            headers = [
+              ...headers,
+              'Only in V2', 
+              'Only in V4',
+              'Only in Corporate',
+              'Only in Univius'
+            ];
+          }
+        }
+      } else {
+        // Standard format headers
+        // Check if this is Individual API mode
+        const isIndividualMode = processingMode === 'individual';
+        
+        if (isIndividualMode) {
+          // Individual API mode - no comparison columns
+          headers = [
+            '#', 'Name', 'API Version', 'SDN ID', 'SDN Name', 'NMP (%)', 'OMP (%)', 'Processing Time (ms)'
+          ];
+        } else {
+          // Multi-API modes - include comparison columns
+          const baseHeaders = [
+            '#', 'Name', 'API Version', 'SDN ID', 'SDN Name', 'Processing Time (ms)', 
+            'V2 Faster?', 'V4 Faster?'
+          ];
+          
+          // For combined view, add additional columns
+          const combinedHeaders = [
+            ...baseHeaders.slice(0, -2), // Remove the last two columns (V2/V4 Faster?)
+            'V2 Faster?', 
+            'V4 Faster?',
+            'Only in V2', 
+            'Only in V4',
+          ];
+          
+          headers = version === 'combined' ? combinedHeaders : baseHeaders;
+        }
+      }
 
       const renderSdnDifferences = (sdns) => {
         if (!sdns?.length) return 'N/A';
@@ -1063,6 +1624,11 @@ function App() {
                   );
                 }
 
+                // Handle Corporate API format
+                if (hasCorporateData) {
+                  return renderCorporateRows(result, idx, serialNumber, version);
+                }
+
                 const renderVersionRows = (versionKey) => {
                   const versionData = result[versionKey];
                   if (!versionData) return null;
@@ -1076,10 +1642,18 @@ function App() {
                         <TableCell>{versionKey.toUpperCase()}</TableCell>
                         <TableCell>No matches</TableCell>
                         <TableCell>N/A</TableCell>
+                        {/* Add NMP and OMP columns for Individual mode */}
+                        {processingMode === 'individual' && (
+                          <>
+                            <TableCell>N/A</TableCell>
+                            <TableCell>N/A</TableCell>
+                          </>
+                        )}
                         <TableCell>
                           {versionData?._duration ? `${versionData._duration.toFixed(2)} ms` : 'N/A'}
                         </TableCell>
-                        {version === 'combined' && result.v2?._duration && result.v4?._duration && (
+                        {/* Only show comparison columns for non-individual modes */}
+                        {processingMode !== 'individual' && version === 'combined' && result.v2?._duration && result.v4?._duration && (
                           <>
                             <TableCell 
                               style={{
@@ -1099,7 +1673,7 @@ function App() {
                             </TableCell>
                           </>
                         )}
-                        {version === 'combined' && (
+                        {processingMode !== 'individual' && version === 'combined' && (
                           <>
                             <TableCell>N/A</TableCell>
                             <TableCell>N/A</TableCell>
@@ -1131,12 +1705,20 @@ function App() {
                         ) : null}
                         <TableCell>{sdnId}</TableCell>
                         <TableCell>{sdnName}</TableCell>
+                        {/* Add NMP and OMP columns for Individual mode */}
+                        {processingMode === 'individual' && (
+                          <>
+                            <TableCell>{item.nameMatchPercentage ? `${item.nameMatchPercentage}%` : 'N/A'}</TableCell>
+                            <TableCell>{item.overAllPercentage ? `${item.overAllPercentage}%` : 'N/A'}</TableCell>
+                          </>
+                        )}
                         {i === 0 && (
                           <>
                             <TableCell rowSpan={versionData.responses.length}>
                               {versionData?._duration ? `${versionData._duration.toFixed(2)} ms` : 'N/A'}
                             </TableCell>
-                            {version === 'combined' && result.v2?._duration && result.v4?._duration && (
+                            {/* Only show comparison columns for non-individual modes */}
+                            {processingMode !== 'individual' && version === 'combined' && result.v2?._duration && result.v4?._duration && (
                               <>
                                 <TableCell 
                                   rowSpan={versionData.responses.length}
@@ -1158,7 +1740,7 @@ function App() {
                                 </TableCell>
                               </>
                             )}
-                            {version === 'combined' && (
+                            {processingMode !== 'individual' && version === 'combined' && (
                               <>
                                 <TableCell rowSpan={versionData.responses.length}>
                                   {renderSdnDifferences(result._sdnComparison?.onlyInV2)}
@@ -1416,6 +1998,127 @@ function App() {
           </Typography>
         </Box>
       ) : (
+        <>
+          {/* API Selection Controls */}
+          <Card sx={{ mb: 3 }}>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                API Selection
+              </Typography>
+              
+              <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
+                <FormControl size="small" sx={{ minWidth: 150 }}>
+                  <InputLabel>Processing Mode</InputLabel>
+                  <Select
+                    value={processingMode}
+                    label="Processing Mode"
+                    onChange={(e) => handleProcessingModeChange(e.target.value)}
+                  >
+                    <MenuItem value="all">All APIs</MenuItem>
+                    <MenuItem value="selected">Selected APIs</MenuItem>
+                    <MenuItem value="individual">Individual API</MenuItem>
+                  </Select>
+                </FormControl>
+                
+                {(processingMode === 'selected' || processingMode === 'individual') && (
+                  <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <Typography variant="body2" color="text.secondary">
+                      {processingMode === 'individual' ? 'Select API:' : 'Select APIs:'}
+                    </Typography>
+                    
+                    {processingMode === 'individual' ? (
+                      <RadioGroup
+                        row
+                        value={selectedApis[0] || ''}
+                        onChange={(e) => setSelectedApis([e.target.value])}
+                      >
+                        <FormControlLabel
+                          value="api1"
+                          control={<Radio />}
+                          label="API 1 (V2)"
+                        />
+                        <FormControlLabel
+                          value="api2"
+                          control={<Radio />}
+                          label="API 2 (V4)"
+                        />
+                        <FormControlLabel
+                          value="api3"
+                          control={<Radio />}
+                          label="Corporate API"
+                        />
+                      </RadioGroup>
+                    ) : (
+                      <FormGroup row>
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              checked={selectedApis.includes('api1')}
+                              onChange={(e) => {
+                                setSelectedApis(prev => 
+                                  e.target.checked 
+                                    ? [...prev, 'api1']
+                                    : prev.filter(api => api !== 'api1')
+                                );
+                              }}
+                            />
+                          }
+                          label="API 1 (V2)"
+                        />
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              checked={selectedApis.includes('api2')}
+                              onChange={(e) => {
+                                setSelectedApis(prev => 
+                                  e.target.checked 
+                                    ? [...prev, 'api2']
+                                    : prev.filter(api => api !== 'api2')
+                                );
+                              }}
+                            />
+                          }
+                          label="API 2 (V4)"
+                        />
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              checked={selectedApis.includes('api3')}
+                              onChange={(e) => {
+                                setSelectedApis(prev => 
+                                  e.target.checked 
+                                    ? [...prev, 'api3']
+                                    : prev.filter(api => api !== 'api3')
+                                );
+                              }}
+                            />
+                          }
+                          label="Corporate API"
+                        />
+                      </FormGroup>
+                    )}
+                  </Box>
+                )}
+                
+                {processingMode !== 'all' && (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Chip 
+                      label={`${selectedApis.length} API${selectedApis.length !== 1 ? 's' : ''} selected`}
+                      color={selectedApis.length > 0 ? 'primary' : 'default'}
+                      size="small"
+                    />
+                  </Box>
+                )}
+              </Box>
+              
+              {processingMode !== 'all' && selectedApis.length === 0 && (
+                <Typography variant="body2" color="error" sx={{ mt: 1 }}>
+                  Please select at least one API to proceed.
+                </Typography>
+              )}
+            </CardContent>
+          </Card>
+        
         <Box sx={{ mb: 3, display: 'flex', gap: 2, flexWrap: 'wrap' }}>
           <input
             accept=".xlsx, .xls"
@@ -1438,7 +2141,7 @@ function App() {
             variant="contained"
             color="primary"
             onClick={handleProcessFile}
-            disabled={!file || loading}
+            disabled={!file || loading || (processingMode !== 'all' && selectedApis.length === 0)}
             startIcon={loading ? <CircularProgress size={20} /> : <PlayArrowIcon />}
           >
             {loading ? 'Processing...' : 'Process'}
@@ -1473,6 +2176,7 @@ function App() {
             </Box>
           )}
         </Box>
+        </>
       )}
 
       {/* Settings Dialog */}
@@ -1621,6 +2325,81 @@ function App() {
                       type="password"
                       value={config.api2.keycloak.password}
                       onChange={(e) => handleConfigChange('api2', 'password', e.target.value, true)}
+                      fullWidth
+                      size="small"
+                      disabled={isTestingConnection}
+                    />
+                  </Box>
+                </Box>
+              </Box>
+            </Box>
+
+            {/* API 3 Section */}
+            <Box sx={{ p: 2, border: '1px solid #e0e0e0', borderRadius: 1 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                <Typography variant="h6">Corporate API Configuration</Typography>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={() => testKeycloakConnection('api3')}
+                  disabled={isTestingConnection}
+                  startIcon={isTestingConnection ? <CircularProgress size={20} /> : null}
+                >
+                  {isTestingConnection ? 'Testing...' : 'Test Connection'}
+                </Button>
+              </Box>
+              <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: '1fr 1fr' }}>
+                <TextField
+                  label="Corporate API URL"
+                  value={config.api3.url}
+                  onChange={(e) => handleConfigChange('api3', 'url', e.target.value)}
+                  fullWidth
+                  size="small"
+                  placeholder="https://example.com/api/v3"
+                />
+                
+                <Box sx={{ gridColumn: '1 / -1', mt: 2 }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                    <Typography variant="subtitle2">Keycloak Configuration</Typography>
+                  </Box>
+                  <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: '1fr 1fr' }}>
+                    <TextField
+                      label="Keycloak URL"
+                      value={config.api3.keycloak.url}
+                      onChange={(e) => handleConfigChange('api3', 'url', e.target.value, true)}
+                      fullWidth
+                      size="small"
+                      disabled={isTestingConnection}
+                    />
+                    <TextField
+                      label="Realm"
+                      value={config.api3.keycloak.realm}
+                      onChange={(e) => handleConfigChange('api3', 'realm', e.target.value, true)}
+                      fullWidth
+                      size="small"
+                      disabled={isTestingConnection}
+                    />
+                    <TextField
+                      label="Client ID"
+                      value={config.api3.keycloak.clientId}
+                      onChange={(e) => handleConfigChange('api3', 'clientId', e.target.value, true)}
+                      fullWidth
+                      size="small"
+                      disabled={isTestingConnection}
+                    />
+                    <TextField
+                      label="Username"
+                      value={config.api3.keycloak.username}
+                      onChange={(e) => handleConfigChange('api3', 'username', e.target.value, true)}
+                      fullWidth
+                      size="small"
+                      disabled={isTestingConnection}
+                    />
+                    <TextField
+                      label="Password"
+                      type="password"
+                      value={config.api3.keycloak.password}
+                      onChange={(e) => handleConfigChange('api3', 'password', e.target.value, true)}
                       fullWidth
                       size="small"
                       disabled={isTestingConnection}

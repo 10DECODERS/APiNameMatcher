@@ -395,7 +395,7 @@ const apiService = {
    * @param {string} [apiName='api1'] - The API to use ('api1', 'api2', or 'api3')
    * @returns {Promise<Object>} The API response
    */
-  processName: async (nameData, apiName = 'api1') => {
+  processName: async (nameData, apiName = 'api1', options = {}) => {
     const api = apiUtils.getApi(apiName);
     const startTime = performance.now();
     
@@ -463,7 +463,7 @@ const apiService = {
             contact: "",
             accountNo: "",
             customerType: "",
-            type: "Person",
+            type: options.type || "Person", // Use type from options, default to "Person"
             transactionType: "",
             flag: false,
             limitFlag: 10000
@@ -585,10 +585,11 @@ const apiService = {
    * @param {string} apiName - The API to use ('api1', 'api2', or 'api3')
    * @returns {Promise<Object>} Results from the specified API
    */
-  processNameWithSingleApi: async (name, apiName) => {
+  processNameWithSingleApi: async (name, apiName, options = {}) => {
     const startTime = performance.now();
     console.log(`=== Starting processNameWithSingleApi for ${apiName} ===`);
     console.log('Processing name:', name);
+    console.log('Options:', options);
     
     // Log current API configuration
     console.log(`${apiName.toUpperCase()} Config URL:`, config[apiName].url);
@@ -598,7 +599,7 @@ const apiService = {
       console.log(`[${apiName}] Current token exists:`, !!token);
       
       // Process the name with the specified API
-      const result = await apiService.processName(name, apiName);
+      const result = await apiService.processName(name, apiName, options);
       
       const endTime = performance.now();
       const duration = endTime - startTime;

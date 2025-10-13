@@ -77,8 +77,9 @@ function App() {
   const [config, setConfig] = useState(DEFAULT_CONFIG); // Initialize with defaults
   const [initializing, setInitializing] = useState(true);
   const [configLoaded, setConfigLoaded] = useState(false);
-  const [selectedApis, setSelectedApis] = useState(['api1', 'api2', 'api3']); // Default: all APIs selected
+  const [selectedApis, setSelectedApis] = useState(['api1', 'api3']); // Default: available APIs selected
   const [processingMode, setProcessingMode] = useState('all'); // 'all', 'selected', or 'individual'
+  const [api1Type, setApi1Type] = useState('Person'); // Type selection for API 1: 'Person' or 'Entity'
   
   // Handle processing mode changes
   const handleProcessingModeChange = (newMode) => {
@@ -89,13 +90,16 @@ function App() {
       // In individual mode, select only the first API
       setSelectedApis(['api1']);
     } else if (newMode === 'selected') {
-      // In selected mode, keep current selection or default to all
+      // In selected mode, keep current selection or default to available APIs
       if (selectedApis.length === 0) {
-        setSelectedApis(['api1', 'api2', 'api3']);
+        setSelectedApis(['api1', 'api3']);
+      } else {
+        // Remove api2 if it's currently selected
+        setSelectedApis(prev => prev.filter(api => api !== 'api2'));
       }
     } else if (newMode === 'all') {
-      // In all mode, selection doesn't matter but keep all for consistency
-      setSelectedApis(['api1', 'api2', 'api3']);
+      // In all mode, selection doesn't matter but keep available APIs for consistency
+      setSelectedApis(['api1', 'api3']);
     }
   };
   
@@ -372,7 +376,9 @@ function App() {
           } else {
             // Individual mode - process only the first selected API
             const apiToUse = selectedApis[0] || 'api1';
-            result = await apiService.processNameWithSingleApi(item, apiToUse);
+            // Pass type parameter for API 1
+            const options = apiToUse === 'api1' ? { type: api1Type } : {};
+            result = await apiService.processNameWithSingleApi(item, apiToUse, options);
           }
           
           // Compare SDN data between V2, V4, API3, and Univius
@@ -993,36 +999,47 @@ function App() {
             if (apiData) {
               const formatTime = (time) => time ? time.toFixed(2) : 'N/A';
               
-              // Handle SDN matches
-              if (!apiData.responses || apiData.responses.length === 0) {
-                // No matches
+              // Check if this is API 1 - use simplified format
+              if (selectedApi === 'api1') {
+                // API 1 - simplified format with only Name and Processing Time
                 exportData.push({
                   'Serial': i + 1,
                   'Name': result.name,
-                  'API Version': apiName,
-                  'SDN ID': 'No matches',
-                  'SDN Name': 'N/A',
-                  'NMP (%)': 'N/A',
-                  'OMP (%)': 'N/A',
                   'Processing Time (ms)': formatTime(apiTiming.duration)
                 });
               } else {
-                // Has matches - create row for each SDN
-                apiData.responses.forEach((response, responseIdx) => {
-                  const sdnId = response.rulesDetails?.sdnid || 'N/A';
-                  const sdnName = response.rulesDetails?.sdnname || 'N/A';
-                  
+                // Other APIs - full format
+                // Handle SDN matches
+                if (!apiData.responses || apiData.responses.length === 0) {
+                  // No matches
                   exportData.push({
-                    'Serial': responseIdx === 0 ? i + 1 : '',
-                    'Name': responseIdx === 0 ? result.name : '',
-                    'API Version': responseIdx === 0 ? apiName : '',
-                    'SDN ID': sdnId,
-                    'SDN Name': sdnName,
-                    'NMP (%)': response.nameMatchPercentage ? `${response.nameMatchPercentage}%` : 'N/A',
-                    'OMP (%)': response.overAllPercentage ? `${response.overAllPercentage}%` : 'N/A',
-                    'Processing Time (ms)': responseIdx === 0 ? formatTime(apiTiming.duration) : ''
+                    'Serial': i + 1,
+                    'Name': result.name,
+                    'API Version': apiName,
+                    'SDN ID': 'No matches',
+                    'SDN Name': 'N/A',
+                    'NMP (%)': 'N/A',
+                    'OMP (%)': 'N/A',
+                    'Processing Time (ms)': formatTime(apiTiming.duration)
                   });
-                });
+                } else {
+                  // Has matches - create row for each SDN
+                  apiData.responses.forEach((response, responseIdx) => {
+                    const sdnId = response.rulesDetails?.sdnid || 'N/A';
+                    const sdnName = response.rulesDetails?.sdnname || 'N/A';
+                    
+                    exportData.push({
+                      'Serial': responseIdx === 0 ? i + 1 : '',
+                      'Name': responseIdx === 0 ? result.name : '',
+                      'API Version': responseIdx === 0 ? apiName : '',
+                      'SDN ID': sdnId,
+                      'SDN Name': sdnName,
+                      'NMP (%)': response.nameMatchPercentage ? `${response.nameMatchPercentage}%` : 'N/A',
+                      'OMP (%)': response.overAllPercentage ? `${response.overAllPercentage}%` : 'N/A',
+                      'Processing Time (ms)': responseIdx === 0 ? formatTime(apiTiming.duration) : ''
+                    });
+                  });
+                }
               }
             }
           } else {
@@ -1558,10 +1575,18 @@ function App() {
         const isIndividualMode = processingMode === 'individual';
         
         if (isIndividualMode) {
-          // Individual API mode - no comparison columns
-          headers = [
-            '#', 'Name', 'API Version', 'SDN ID', 'SDN Name', 'NMP (%)', 'OMP (%)', 'Processing Time (ms)'
-          ];
+          // Individual API mode - check which API is selected
+          if (selectedApis.includes('api1') && selectedApis.length === 1) {
+            // API 1 only - simplified format
+            headers = [
+              '#', 'Name', 'Processing Time (ms)'
+            ];
+          } else {
+            // Other individual APIs - full format
+            headers = [
+              '#', 'Name', 'API Version', 'SDN ID', 'SDN Name', 'NMP (%)', 'OMP (%)', 'Processing Time (ms)'
+            ];
+          }
         } else {
           // Multi-API modes - include comparison columns
           const baseHeaders = [
@@ -1635,18 +1660,27 @@ function App() {
 
                   // If no matches, return a single row with 'No matches'
                   if (!versionData?.responses?.length) {
+                    // Check if this is Individual API 1 mode
+                    const isIndividualApi1 = processingMode === 'individual' && 
+                                           selectedApis.includes('api1') && 
+                                           selectedApis.length === 1;
+                    
                     return (
                       <TableRow key={`${versionKey}-${idx}-no-match`}>
                         <TableCell>{serialNumber}</TableCell>
                         <TableCell>{result.name}</TableCell>
-                        <TableCell>{versionKey.toUpperCase()}</TableCell>
-                        <TableCell>No matches</TableCell>
-                        <TableCell>N/A</TableCell>
-                        {/* Add NMP and OMP columns for Individual mode */}
-                        {processingMode === 'individual' && (
+                        {!isIndividualApi1 && (
                           <>
+                            <TableCell>{versionKey.toUpperCase()}</TableCell>
+                            <TableCell>No matches</TableCell>
                             <TableCell>N/A</TableCell>
-                            <TableCell>N/A</TableCell>
+                            {/* Add NMP and OMP columns for Individual mode (except API 1) */}
+                            {processingMode === 'individual' && (
+                              <>
+                                <TableCell>N/A</TableCell>
+                                <TableCell>N/A</TableCell>
+                              </>
+                            )}
                           </>
                         )}
                         <TableCell>
@@ -1688,6 +1722,11 @@ function App() {
                     const sdnId = item.rulesDetails?.sdnid || 'N/A';
                     const sdnName = item.rulesDetails?.sdnname || 'N/A';
                     
+                    // Check if this is Individual API 1 mode
+                    const isIndividualApi1 = processingMode === 'individual' && 
+                                           selectedApis.includes('api1') && 
+                                           selectedApis.length === 1;
+                    
                     return (
                       <TableRow key={`${versionKey}-${idx}-${i}`}>
                         {i === 0 ? (
@@ -1698,18 +1737,24 @@ function App() {
                             <TableCell rowSpan={versionData.responses.length}>
                               {result.name}
                             </TableCell>
-                            <TableCell rowSpan={versionData.responses.length}>
-                              {versionKey.toUpperCase()}
-                            </TableCell>
+                            {!isIndividualApi1 && (
+                              <TableCell rowSpan={versionData.responses.length}>
+                                {versionKey.toUpperCase()}
+                              </TableCell>
+                            )}
                           </>
                         ) : null}
-                        <TableCell>{sdnId}</TableCell>
-                        <TableCell>{sdnName}</TableCell>
-                        {/* Add NMP and OMP columns for Individual mode */}
-                        {processingMode === 'individual' && (
+                        {!isIndividualApi1 && (
                           <>
-                            <TableCell>{item.nameMatchPercentage ? `${item.nameMatchPercentage}%` : 'N/A'}</TableCell>
-                            <TableCell>{item.overAllPercentage ? `${item.overAllPercentage}%` : 'N/A'}</TableCell>
+                            <TableCell>{sdnId}</TableCell>
+                            <TableCell>{sdnName}</TableCell>
+                            {/* Add NMP and OMP columns for Individual mode (except API 1) */}
+                            {processingMode === 'individual' && (
+                              <>
+                                <TableCell>{item.nameMatchPercentage ? `${item.nameMatchPercentage}%` : 'N/A'}</TableCell>
+                                <TableCell>{item.overAllPercentage ? `${item.overAllPercentage}%` : 'N/A'}</TableCell>
+                              </>
+                            )}
                           </>
                         )}
                         {i === 0 && (
@@ -2027,27 +2072,40 @@ function App() {
                     </Typography>
                     
                     {processingMode === 'individual' ? (
-                      <RadioGroup
-                        row
-                        value={selectedApis[0] || ''}
-                        onChange={(e) => setSelectedApis([e.target.value])}
-                      >
-                        <FormControlLabel
-                          value="api1"
-                          control={<Radio />}
-                          label="API 1 (V2)"
-                        />
-                        <FormControlLabel
-                          value="api2"
-                          control={<Radio />}
-                          label="API 2 (V4)"
-                        />
-                        <FormControlLabel
-                          value="api3"
-                          control={<Radio />}
-                          label="Corporate API"
-                        />
-                      </RadioGroup>
+                      <>
+                        <RadioGroup
+                          row
+                          value={selectedApis[0] || ''}
+                          onChange={(e) => setSelectedApis([e.target.value])}
+                        >
+                          <FormControlLabel
+                            value="api1"
+                            control={<Radio />}
+                            label="API 1 (V2)"
+                          />
+                          <FormControlLabel
+                            value="api3"
+                            control={<Radio />}
+                            label="Corporate API"
+                          />
+                        </RadioGroup>
+                        
+                        {selectedApis.includes('api1') && (
+                          <Box sx={{ mt: 2 }}>
+                            <FormControl size="small" sx={{ minWidth: 120 }}>
+                              <InputLabel>Type</InputLabel>
+                              <Select
+                                value={api1Type}
+                                label="Type"
+                                onChange={(e) => setApi1Type(e.target.value)}
+                              >
+                                <MenuItem value="Person">Person</MenuItem>
+                                <MenuItem value="Entity">Entity</MenuItem>
+                              </Select>
+                            </FormControl>
+                          </Box>
+                        )}
+                      </>
                     ) : (
                       <FormGroup row>
                         <FormControlLabel
@@ -2064,21 +2122,6 @@ function App() {
                             />
                           }
                           label="API 1 (V2)"
-                        />
-                        <FormControlLabel
-                          control={
-                            <Checkbox
-                              checked={selectedApis.includes('api2')}
-                              onChange={(e) => {
-                                setSelectedApis(prev => 
-                                  e.target.checked 
-                                    ? [...prev, 'api2']
-                                    : prev.filter(api => api !== 'api2')
-                                );
-                              }}
-                            />
-                          }
-                          label="API 2 (V4)"
                         />
                         <FormControlLabel
                           control={
